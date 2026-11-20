@@ -45,7 +45,14 @@ LIST_FIELDS = [
 DETAIL_FIELDS = ["contentid", "title", "overview", "homepage"]
 
 
+MAX_RETRIES = 4         # 연결이 끊겼을 때 다시 시도할 횟수
+
+
 class QuotaExceeded(Exception):
+    pass
+
+
+class ServerUnavailable(Exception):
     pass
 
 
@@ -58,7 +65,19 @@ def call_api(operation, **params):
         "_type": "json",
         **params,
     }
-    resp = requests.get(f"{BASE_URL}/{operation}", params=query, timeout=20)
+    # 공공데이터포털 서버가 가끔 응답을 안 할 때가 있어서, 끊기면 잠시 쉬었다가 다시 시도한다
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(f"{BASE_URL}/{operation}", params=query, timeout=20)
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt == MAX_RETRIES:
+                raise ServerUnavailable(
+                    f"서버 연결이 {MAX_RETRIES}번 연속 실패했습니다. 잠시 후 다시 실행하세요. ({type(e).__name__})"
+                )
+            wait = 5 * attempt
+            print(f"  연결 실패, {wait}초 후 다시 시도 ({attempt}/{MAX_RETRIES})")
+            time.sleep(wait)
 
     # 인증키 오류, 호출 한도 초과 등은 json 요청이어도 XML로 온다
     try:
@@ -143,7 +162,7 @@ def collect_detail():
                 if count % 50 == 0:
                     print(f"  {count}건 수집")
                 time.sleep(0.1)
-        except QuotaExceeded as e:
+        except (QuotaExceeded, ServerUnavailable) as e:
             print(e)
     print(f"이번 실행에서 {count}건 수집 -> {DETAIL_CSV}")
 
