@@ -160,8 +160,10 @@ def read_codes():
 
 
 # ---------------------------------------------------------------- 2), 3) 기간별 매일 가격
-def period(code, start, end):
-    """'일별 품목별 가격'으로 한 품목·품종·등급의 기간 내 매일 가격"""
+def period(code, start, end, all_regions=False):
+    """'일별 품목별 가격'으로 한 품목·품종·등급의 기간 내 매일 가격.
+    KAMIS는 지역별(서울·부산 등) 행과 '평균', 비교용 '평년' 행을 함께 준다.
+    기본은 전국 '평균' 행만 남기고, '평년'(여러 해 평균 참고값)과 요청 기간 밖 날짜는 버린다."""
     cls_code = "01" if code["cls"] == "소매" else "02"
     cat_code = next(k for k, v in CATEGORIES.items() if v == code["category"])
     rows, rc = unpack(call({
@@ -176,13 +178,18 @@ def period(code, start, end):
             m, d = str(r.get("regday", "")).split("/")
             day = date(int(r.get("yyyy")), int(m), int(d))
         except (ValueError, TypeError):
-            continue    # 평년 등 날짜가 없는 요약 행
+            continue    # 날짜가 없는 요약 행
+        county = str(r.get("countyname", "")).strip()
+        if county == "평년" or not (start <= day <= end):
+            continue
+        if not all_regions and county != "평균":
+            continue
         out.append({
             "date": day.isoformat(), "cls": code["cls"], "category": code["category"],
             "item_code": code["item_code"], "item_name": code["item_name"],
             "kind_code": code["kind_code"], "kind_name": code["kind_name"],
             "rank_code": code["rank_code"], "rank": code["rank"], "unit": code["unit"],
-            "county": r.get("countyname", ""), "price": num(r.get("price")),
+            "county": county, "price": num(r.get("price")),
         })
     return out, rc
 
@@ -192,12 +199,12 @@ def cmd_test(a):
     c = codes[0]
     end = date.today() - timedelta(days=1)
     start = end - timedelta(days=364)
-    rows, rc = period(c, start, end)
-    days = sorted({r["date"] for r in rows})
+    rows, rc = period(c, start, end, all_regions=True)
+    days = sorted({r["date"] for r in rows if r["county"] == "평균"})
     counties = sorted({r["county"] for r in rows})
     print(f"시험 품목: {c['cls']} {c['item_name']}/{c['kind_name']} ({c['rank']}) · 요청 기간 {start} ~ {end}")
-    print(f"결과 코드 {rc} · 받은 행 {len(rows)} · 날짜 {len(days)}일 ({days[0] if days else '-'} ~ {days[-1] if days else '-'})")
-    print(f"지역 구분: {counties[:8]}")
+    print(f"결과 코드 {rc} · 요청 기간 안의 전국 평균 날짜 {len(days)}일 ({days[0] if days else '-'} ~ {days[-1] if days else '-'})")
+    print(f"지역 구분(평년 제외): {counties[:8]}  → 수집할 때는 기본으로 '평균'만 저장")
     if days and days[0] > (start + timedelta(days=45)).isoformat():
         print("→ 요청한 1년 중 앞부분이 빠졌습니다. 기간 제한이 있을 수 있어요. --chunk 90 또는 30으로 수집하세요.")
     elif days:
@@ -238,7 +245,7 @@ def cmd_collect(a):
                         print(f"\n이번 실행 최대 호출 수({a.max_calls})에 도달. 다시 실행하면 이어서 받습니다.")
                         return
                     try:
-                        rows, rc = period(c, s, e)
+                        rows, rc = period(c, s, e, a.all_regions)
                     except Exception as ex:
                         fails += 1
                         print(f"  실패: {c['item_name']}/{c['kind_name']} {s}~{e} - {ex}")
@@ -274,6 +281,7 @@ def main():
     p3.add_argument("--end", default=(date.today() - timedelta(days=1)).isoformat())
     p3.add_argument("--chunk", type=int, default=365, help="한 번에 받는 기간(일)")
     p3.add_argument("--max-calls", type=int, default=100000, help="이번 실행 최대 호출 수")
+    p3.add_argument("--all-regions", action="store_true", help="전국 평균 외 지역별 가격도 저장")
     a = ap.parse_args()
 
     if not (KEY and CID):
